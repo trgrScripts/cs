@@ -13,7 +13,7 @@
     const gold = it.tier === GOLD && o.mask !== false;
     const color = gold ? CS.tierColor(GOLD) : CS.tierColor(it.tier);
     return `<div class="ctile ${gold ? "ctile-gold" : ""} ${o.cls || ""}" style="--c:${color}" ${o.attrs || ""}>
-      ${gold ? goldEmblem() : imgTag(it, 256, "", o.eager)}
+      ${gold ? goldEmblem() : imgTag(it, 256, "", o.eager !== false)}
     </div>`;
   }
 
@@ -65,11 +65,11 @@
             ${crate.cat === "case" && crate.contains.some((i) => i.stattrakable) ? `<span><i style="background:var(--st)"></i>StatTrak™ <b class="mono">10%</b></span>` : ""}
           </div>
           <div class="ctiles" id="tiles">
-            ${sorted.map((it) => tile(it, { attrs: `title="${esc(tooltipFor(it, perItem.get(it.tier), crate))}"` })).join("")}
+            ${sorted.map((it) => tile(it, { eager: false, attrs: `title="${esc(tooltipFor(it, perItem.get(it.tier), crate))}"` })).join("")}
             ${goldTier ? tile(crate.rare[0], { attrs: `role="button" tabindex="0" id="gold-tile" title="${esc(`★ Rare Special Item\n${crate.rareGroups.length} knife/glove finishes · ${pct(goldTier.p)} total\nClick to see them all`)}"` }) : ""}
           </div>
           <div class="rare-list" id="rare-list" hidden>
-            <div class="ctiles">${crate.rare.map((it) => tile(it, { mask: false, attrs: `title="${esc(tooltipFor(it, goldTier.p / crate.rareGroups.length, crate) + (it.phase ? "\n" + it.phase : ""))}"` })).join("")}</div>
+            <div class="ctiles">${crate.rare.map((it) => tile(it, { mask: false, eager: false, attrs: `title="${esc(tooltipFor(it, goldTier.p / crate.rareGroups.length, crate) + (it.phase ? "\n" + it.phase : ""))}"` })).join("")}</div>
           </div>
         </div>
 
@@ -90,6 +90,7 @@
       </section>`;
 
     scene = { crate, el: $(".scene", host), phase: "idle", drops: [], verb };
+    preload(crate);
     renderActions();
 
     $$(".seg [data-n]", host).forEach((b) => b.addEventListener("click", () => {
@@ -110,6 +111,21 @@
       gt.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
     }
     host.addEventListener("click", onAction);
+  }
+
+  // Warm the browser cache with every image the reel can show, so tiles that
+  // fly past at full speed already have their picture.
+  const preloaded = new Set();
+  function preload(crate) {
+    for (const it of crate.contains) {
+      const url = CS.thumb(it, 256);
+      if (!url || preloaded.has(url)) continue;
+      preloaded.add(url);
+      const img = new Image();
+      img.decoding = "async";
+      img.onerror = () => { if (img.src !== it.img) img.src = it.img; };
+      img.src = url;
+    }
   }
 
   function renderActions() {
@@ -178,7 +194,7 @@
         return cells;
       });
       mid.innerHTML = `<div class="reels ${size}">${strips.map((cells) =>
-        `<div class="reel"><div class="reel-track">${cells.map((it, i) => tile(it, { eager: Math.abs(i - WIN) < 12, attrs: i === WIN ? 'data-win="1"' : "" })).join("")}</div></div>`
+        `<div class="reel"><div class="reel-track">${cells.map((it, i) => tile(it, { attrs: i === WIN ? 'data-win="1"' : "" })).join("")}</div></div>`
       ).join("")}</div>
       <div class="scene-case small">${crate.img ? `<img src="${esc(crate.img)}" alt="">` : ""}</div>`;
 
@@ -234,7 +250,8 @@
       const color = CS.tierColor(it.tier);
       const w = CS.wearOf(inv.f);
       const p = priceTag(inv);
-      mid.innerHTML = `<div class="result" style="--c:${color}">
+      const pat = CS.patternOf(inv);
+      mid.innerHTML = `${pat ? `<div class="pattern-banner pat-${pat.style}" role="status">${esc(pat.label)}! <span>Pattern ${inv.s} · ×${pat.mult} value</span></div>` : ""}<div class="result" style="--c:${color}">
         <div class="result-art">${it.tier >= 4 ? `<div class="rays" aria-hidden="true"></div>` : ""}<div class="result-glow" aria-hidden="true"></div>${imgTag(it, 512, "", true)}</div>
         <div class="result-info">
           <div class="rarity" style="color:${color}">${rarityLabel(it)}</div>
@@ -251,7 +268,7 @@
         <div class="item-grid">${drops.map((d, i) => itemCard(CS.byKey.get(d.k), d, { button: true, attrs: `data-act="inspect" data-uid="${d.u}"`, style: `animation-delay:${i * 50}ms` })).join("")}</div>
       </div>`;
     }
-    scene.el.classList.toggle("gold-hit", bestIt.tier === GOLD);
+    scene.el.classList.toggle("gold-hit", bestIt.tier === GOLD || drops.some((d) => CS.patternOf(d)));
     setPhase("reveal");
   }
 

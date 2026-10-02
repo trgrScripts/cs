@@ -16,7 +16,7 @@
   // Market price of an owned item; "~" marks an estimate.
   const priceTag = (inv) => {
     const p = CS.price(inv);
-    return p == null ? "" : (CS.isEstimate(inv) ? "~" : "") + money(p);
+    return p == null ? "" : (CS.isEstimate(inv) || CS.patternOf(inv) ? "~" : "") + money(p);
   };
   const year = (d) => (d ? d.slice(0, 4) : "");
   const ago = (t) => {
@@ -85,6 +85,8 @@
     let tags = "";
     if (inv && inv.st) tags += `<span class="chip chip-st">StatTrak™</span>`;
     if (inv && inv.sv) tags += `<span class="chip chip-souv">Souvenir</span>`;
+    const pat = inv && CS.patternOf(inv);
+    if (pat) tags += `<span class="chip chip-pat chip-pat-${pat.style}">${esc(pat.short)}</span>`;
     const art = masked ? goldEmblem() : imgTag(it, 256);
     const base = masked ? "★ Rare Special Item" : esc(it.base) + (it.phase ? ` · ${esc(it.phase)}` : "");
     const fin = masked ? "Exceedingly Rare" : esc(it.finish);
@@ -169,7 +171,9 @@
     facts.push(["Market price", CS.price(inv) != null ? `<span class="mono">${priceTag(inv)}</span>${CS.isEstimate(inv) ? ` <span class="muted">est.</span>` : ""}` : `<span class="muted">No market data</span>`]);
     if (w) facts.push(["Exterior", w.name]);
     if (inv.f != null) facts.push(["Float", `<span class="mono">${CS.floatText(inv.f)}</span>`, "wide"]);
-    if (inv.s != null) facts.push(["Pattern", `<span class="mono">${inv.s}</span>`]);
+    const pat = CS.patternOf(inv);
+    if (inv.s != null) facts.push(["Pattern", `<span class="mono">${inv.s}</span>${pat ? ` <span class="chip chip-pat chip-pat-${pat.style}">${esc(pat.label)}</span>` : ""}`, pat ? "wide" : ""]);
+    if (pat) facts.push(["Pattern premium", `<span class="mono">×${pat.mult}</span> <span class="muted">est.</span>`]);
     if (it.phase) facts.push(["Phase", esc(it.phase)]);
     if (it.painted) facts.push(["Float cap", `<span class="mono">${it.min.toFixed(2)} – ${it.max.toFixed(2)}</span>`]);
     if (inv.st) facts.push(["StatTrak™", "0 confirmed kills"]);

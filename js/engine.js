@@ -74,6 +74,25 @@
     it.finish = bar > -1 ? it.name.slice(bar + 3) : it.name;
   }
 
+  // ---------- rare patterns ----------
+  // name -> Map(seed -> tier), from js/patterns.js
+  const patternIndex = new Map();
+  for (const rule of window.CS_PATTERNS || []) {
+    for (const n of rule.names) {
+      const m = patternIndex.get(n) || new Map();
+      for (const t of rule.tiers) for (const seed of t.seeds) m.set(seed, t);
+      patternIndex.set(n, m);
+    }
+  }
+  for (const it of items) {
+    const m = patternIndex.get(it.market.replace("StatTrak™ ", ""));
+    if (m) it.patterns = m;
+  }
+  function patternOf(inv) {
+    const it = byKey.get(inv.k);
+    return it && it.patterns && inv.s != null ? it.patterns.get(inv.s) || null : null;
+  }
+
   const CATEGORIES = [
     { id: "case", label: "Weapon Cases", short: "Cases", key: true },
     { id: "sticker", label: "Sticker Capsules", short: "Stickers" },
@@ -184,7 +203,7 @@
       u: uid(),
       k: item.key,
       f: opts.f !== undefined ? opts.f : rollFloat(item),
-      s: item.painted ? randInt(1000) : null,
+      s: opts.s != null ? opts.s : item.painted ? randInt(1000) : null,
       st: st ? 1 : 0,
       sv: crate && crate.cat === "souvenir" && isWeaponish ? 1 : 0,
       c: crate ? crate.id : opts.c || null,
@@ -334,7 +353,10 @@
   }
   function price(inv) {
     const it = byKey.get(inv.k);
-    return it ? priceOf(it, wearOf(inv.f), inv.st, inv.sv) : null;
+    if (!it) return null;
+    const p = priceOf(it, wearOf(inv.f), inv.st, inv.sv);
+    const pat = patternOf(inv);
+    return p != null && pat ? Math.round(p * pat.mult * 100) / 100 : p;
   }
   // Cheapest and dearest normal (non-StatTrak) copy across the wears a skin exists in.
   function priceRange(it, sv) {
@@ -371,6 +393,7 @@
       const counts = new Map(); // key -> count, key = itemIdx*16 + wear*2 + st
       const tiers = {};
       const kept = [];
+      const specials = []; // rare pattern hits
       let done = 0, keptOverflow = 0, best = null, bestFloat = null;
       const souv = crate.cat === "souvenir";
       const CHUNK = 50000;
@@ -381,12 +404,18 @@
           const f = rollFloat(it);
           const st = crate.cat === "case" && it.stattrakable && random() < 0.1 ? 1 : 0;
           const w = f == null ? 5 : f < 0.07 ? 0 : f < 0.15 ? 1 : f < 0.38 ? 2 : f < 0.45 ? 3 : 4;
+          let seed = null;
+          if (it.patterns) {
+            seed = randInt(1000);
+            const pat = it.patterns.get(seed);
+            if (pat) specials.push({ it, f, st, seed, pat, wear: w === 5 ? null : WEARS[w] });
+          }
           const key = it.idx * 16 + w * 2 + st;
           counts.set(key, (counts.get(key) || 0) + 1);
           tiers[it.tier] = (tiers[it.tier] || 0) + 1;
           if (f != null && (bestFloat == null || f < bestFloat.f)) bestFloat = { it, f, st };
           if (keepTier != null && it.tier >= keepTier) {
-            if (kept.length < keepMax) kept.push(makeDrop(it, crate, { f, st }));
+            if (kept.length < keepMax) kept.push(makeDrop(it, crate, { f, st, s: seed }));
             else keptOverflow++;
           }
         }
@@ -404,16 +433,23 @@
           else value += p * cnt;
           rows.push({ it, wear: w === 5 ? null : WEARS[w], st, cnt, p });
         }
+        // Rare patterns: add their premium on top of the normal price counted above.
+        for (const sp of specials) {
+          const base = priceOf(sp.it, sp.wear, sp.st, souv && (sp.it.kind === "weapon" || sp.it.kind === "knife"));
+          sp.p = base != null ? Math.round(base * sp.pat.mult * 100) / 100 : null;
+          if (base != null) value += base * (sp.pat.mult - 1);
+        }
+        specials.sort((x, y) => (y.p || 0) - (x.p || 0));
         rows.sort((x, y) => (y.p || 0) - (x.p || 0) || y.it.tier - x.it.tier);
         best = rows[0] || null;
-        resolve({ opened: done, tiers, value, unpriced, rows, best, bestFloat, kept, keptOverflow, cost: openCost(crate) * done });
+        resolve({ opened: done, tiers, value, unpriced, rows, best, bestFloat, kept, keptOverflow, specials, cost: openCost(crate) * done });
       }
       setTimeout(step, 0);
     });
   }
 
   Object.assign(CS, {
-    prices: PR, hasPrices, marketName, priceOf, price, isEstimate, priceRange, cratePrice, openCost, money, simulate,
+    patternOf, prices: PR, hasPrices, marketName, priceOf, price, isEstimate, priceRange, cratePrice, openCost, money, simulate,
     random, randInt, weighted,
     TIERS, GOLD, WEARS, CATEGORIES, catById,
     items, byKey, crates, crateById,

@@ -104,7 +104,7 @@
   const KIND_FILTERS = [
     ["all", "All items"], ["weapon", "Weapons"], ["knife", "Knives"], ["gloves", "Gloves"],
     ["sticker", "Stickers"], ["patch", "Patches"], ["pin", "Pins"], ["music", "Music kits"],
-    ["st", "StatTrak™ only"], ["sv", "Souvenir only"], ["fav", "Favourites"],
+    ["st", "StatTrak™ only"], ["sv", "Souvenir only"], ["pattern", "Rare patterns"], ["fav", "Favourites"],
   ];
 
   function invFiltered() {
@@ -112,7 +112,8 @@
     const list = store.state.inv.filter((inv) => {
       const it = CS.byKey.get(inv.k);
       if (!it) return false;
-      if (invView.kind === "st" ? !inv.st : invView.kind === "sv" ? !inv.sv : invView.kind === "fav" ? !inv.fav : invView.kind !== "all" && it.kind !== invView.kind) return false;
+      const k = invView.kind;
+      if (k === "st" ? !inv.st : k === "sv" ? !inv.sv : k === "fav" ? !inv.fav : k === "pattern" ? !CS.patternOf(inv) : k !== "all" && it.kind !== k) return false;
       if (invView.tier !== "all" && it.tier !== +invView.tier) return false;
       if (q && !CS.fullName(inv).toLowerCase().includes(q)) return false;
       return true;
@@ -451,9 +452,18 @@
             return `<li><span style="color:${CS.tierColor(t.tier)}">${esc(CS.tierName(t.tier, t.items[0].kind))}</span><span class="bar"><i style="width:${Math.max((n / total) * 100, n ? 1 : 0)}%;background:${CS.tierColor(t.tier)}"></i></span><span class="mono">${big(n)}</span><span class="mono exp">${pct(n / total)} / ${pct(t.p)}</span></li>`;
           }).join("")}</ul>
           ${bf ? `<div class="section-head" style="margin-top:22px"><h2>Lowest float</h2></div><div class="mono best-float">${CS.floatText(bf.f)}</div><div class="muted">${esc(CS.fullName({ k: bf.it.key, st: bf.st, f: bf.f }))}</div>${wearBar(bf.f, bf.it)}` : ""}
+          ${patternsHTML(r, crate)}
           ${r.kept.length ? `<p class="muted" style="margin-bottom:0">${big(r.kept.length)} drops were added to your <a href="#/inventory">inventory</a>.</p>` : ""}
         </section>
       </div>`;
+  }
+  function patternsHTML(r, crate) {
+    const rules = new Set(crate.contains.concat(crate.rare).filter((it) => it.patterns).map((it) => it.name));
+    if (!rules.size) return "";
+    const sp = r.specials;
+    return `<div class="section-head" style="margin-top:22px"><h2>Rare patterns</h2><span class="muted">${big(sp.length)} hit${sp.length === 1 ? "" : "s"}</span></div>
+      ${sp.length ? `<ul class="history">${sp.slice(0, 15).map((x) => `<li style="--c:${CS.tierColor(x.it.tier)}">${imgTag(x.it, 128)}<span class="nm"><span class="chip chip-pat chip-pat-${x.pat.style}">${esc(x.pat.label)}</span> ${esc(CS.fullName({ k: x.it.key, st: x.st, f: x.f }))} <span class="muted">#${x.seed}</span></span><span class="when mono">${x.p != null ? money(x.p) : "–"}</span></li>`).join("")}</ul>`
+        : `<p class="muted">None this run. Can roll: ${esc([...rules].join(", "))}.</p>`}`;
   }
   function bindResults() { /* results are static; links handle themselves */ }
 
