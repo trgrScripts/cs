@@ -2,12 +2,13 @@
 """Build js/prices.js: current USD market prices for every item the app can drop.
 
 Usage:
-    python3 scripts/build_prices.py
+    python3 scripts/build_prices.py [--no-steam]
 
-Sources, tried in order until one works:
-  1. csgotrader.app's aggregated price feed (CSFloat, Buff163, Skinport, Steam ...).
-     For each item the first market in PROVIDERS with a usable price wins.
-  2. Skinport's public item API.
+Sources are merged; each one only fills names the earlier ones lack:
+  1. Skinport's public item API (median of recent sales, else suggested price).
+     Also the only source of Doppler / Gamma Doppler phase prices.
+  2. market.csgo.com's public USD price list.
+  3. Steam Community Market listings (slow and rate limited, so time-boxed).
 
 Runs daily from .github/workflows/prices.yml, which commits the result.
 """
@@ -23,14 +24,10 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 DATA = os.path.join(ROOT, "js", "data.js")
 OUT = os.path.join(ROOT, "js", "prices.js")
 
-CSGOTRADER = "https://prices.csgotrader.app/latest/prices_v6.json"
 SKINPORT = "https://api.skinport.com/v1/items?app_id=730&currency=USD&tradable=0"
-
-# Market preference. CSFloat first, as it tracks real trade prices closely.
-PROVIDERS = ["csfloat", "buff163", "skinport", "steam", "csmoney", "csgotm", "bitskins", "lootfarm"]
-# Keys that hold a price inside a provider's entry, in preference order.
-PRICE_KEYS = ["price", "starting_at", "last_24h", "last_7d", "last_30d", "last_90d",
-              "suggested_price", "min_price", "median_price", "lowest_price", "instant_sale_price"]
+CSGOMARKET = "https://market.csgo.com/api/v2/prices/USD.json"
+STEAM_SEARCH = "https://steamcommunity.com/market/search/render/?appid=730&norender=1&count=100&sort_column=name&sort_dir=asc&start={}"
+STEAM_BUDGET_S = 15 * 60
 
 WEARS = ["Factory New", "Minimal Wear", "Field-Tested", "Well-Worn", "Battle-Scarred"]
 WEAR_RE = re.compile(r" \((%s)\)$" % "|".join(re.escape(w) for w in WEARS))
@@ -61,30 +58,6 @@ def num(v):
     return f if f > 0 else None
 
 
-def extract(v):
-    """Pull one USD price out of a provider entry of unknown shape."""
-    if isinstance(v, (int, float, str)):
-        return num(v)
-    if isinstance(v, dict):
-        for k in PRICE_KEYS:
-            if k in v:
-                p = extract(v[k])
-                if p:
-                    return p
-    return None
-
-
-def find_doppler(v):
-    if isinstance(v, dict):
-        if isinstance(v.get("doppler"), dict):
-            return v["doppler"]
-        for k in PRICE_KEYS:
-            d = find_doppler(v.get(k))
-            if d:
-                return d
-    return None
-
-
 def base_name(name):
     n = WEAR_RE.sub("", name)
     n = n.replace("★ StatTrak™ ", "★ ").replace("StatTrak™ ", "").replace("Souvenir ", "")
@@ -99,34 +72,6 @@ def wanted_names():
         bases.add(it[10] or it[0])
     crates = {c["m"] for c in data["crates"]}
     return bases, crates
-
-
-def from_csgotrader(bases, crates):
-    feed = fetch(CSGOTRADER)
-    print(f"csgotrader: {len(feed)} entries", file=sys.stderr)
-    sample = feed.get("AK-47 | Redline (Field-Tested)") or next(iter(feed.values()))
-    print("sample entry:", json.dumps(sample)[:1500], file=sys.stderr)
-    prices, phases, used = {}, {}, {}
-    for name, entry in feed.items():
-        if not isinstance(entry, dict):
-            continue
-        if name not in crates and base_name(name) not in bases:
-            continue
-        for prov in PROVIDERS:
-            p = extract(entry.get(prov))
-            if p:
-                prices[name] = round(p, 2)
-                used[prov] = used.get(prov, 0) + 1
-                d = find_doppler(entry.get(prov))
-                if d:
-                    for ph, pv in d.items():
-                        pv = extract(pv)
-                        if pv:
-                            phases[f"{name}|{ph}"] = round(pv, 2)
-                break
-    print("prices per market:", used, file=sys.stderr)
-    top = max(used, key=used.get) if used else "csgotrader"
-    return prices, phases, f"{top} (via csgotrader.app)"
 
 
 def from_skinport(bases, crates):
@@ -149,23 +94,72 @@ def from_skinport(bases, crates):
     return prices, phases, "Skinport"
 
 
+def from_csgomarket(bases, crates):
+    data = fetch(CSGOMARKET)
+    prices = {}
+    for it in data.get("items", []):
+        name = it.get("market_hash_name", "")
+        if name not in crates and base_name(name) not in bases:
+            continue
+        p = num(it.get("price"))
+        if p:
+            prices[name] = round(p, 2)
+    return prices, {}, "market.csgo.com"
+
+
+def from_steam(bases, crates):
+    import time
+    prices, start, total, t0, wait = {}, 0, None, time.time(), 2.5
+    while total is None or start < total:
+        if time.time() - t0 > STEAM_BUDGET_S:
+            print(f"steam: time budget used at {start}/{total}", file=sys.stderr)
+            break
+        try:
+            page = fetch(STEAM_SEARCH.format(start))
+        except Exception as e:  # 429s and timeouts: back off and retry
+            wait = min(wait * 2, 60)
+            print(f"steam: {e!r} at {start}, waiting {wait}s", file=sys.stderr)
+            time.sleep(wait)
+            continue
+        wait = 2.5
+        total = page.get("total_count", 0)
+        for it in page.get("results", []):
+            name = it.get("hash_name", "")
+            if name not in crates and base_name(name) not in bases:
+                continue
+            p = num(it.get("sell_price"))
+            if p:
+                prices[name] = round(p / 100, 2)
+        start += 100
+        time.sleep(wait)
+    return prices, {}, "Steam"
+
+
 def main():
     bases, crates = wanted_names()
-    result = None
-    for source in (from_csgotrader, from_skinport):
+    sources = [from_skinport, from_csgomarket] + ([] if "--no-steam" in sys.argv else [from_steam])
+    prices, phases, used = {}, {}, []
+    for source in sources:
         try:
-            result = source(bases, crates)
-            if len(result[0]) > 1000:
-                break
-            print(f"{source.__name__}: only {len(result[0])} prices, trying next source", file=sys.stderr)
-        except Exception as e:  # network, format or decode errors: fall through
+            got, ph, label = source(bases, crates)
+        except Exception as e:  # network, format or decode errors: try the next source
             print(f"{source.__name__} failed: {e!r}", file=sys.stderr)
-    if not result or not result[0]:
+            continue
+        added = 0
+        for name, p in got.items():
+            if name not in prices:
+                prices[name] = p
+                added += 1
+        for k, v in ph.items():
+            phases.setdefault(k, v)
+        print(f"{label}: {len(got)} prices, {added} new", file=sys.stderr)
+        if added:
+            used.append(label)
+    if not prices:
         sys.exit("No price source worked; js/prices.js left unchanged.")
-    prices, phases, source = result
     payload = {
         "updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
-        "source": source,
+        "source": ", ".join(used),
         "p": dict(sorted(prices.items())),
         "ph": dict(sorted(phases.items())),
     }
@@ -174,7 +168,7 @@ def main():
         f.write("window.CS_PRICES=")
         json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
         f.write(";\n")
-    print(f"wrote {OUT}: {len(prices)} prices, {len(phases)} Doppler phase prices from {source}", file=sys.stderr)
+    print(f"wrote {OUT}: {len(prices)} prices, {len(phases)} Doppler phase prices from {payload['source']}", file=sys.stderr)
 
 
 if __name__ == "__main__":
