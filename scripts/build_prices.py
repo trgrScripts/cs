@@ -41,12 +41,16 @@ def fetch(url, headers=None):
     with urllib.request.urlopen(req, timeout=180) as r:
         raw = r.read()
         enc = r.headers.get("Content-Encoding", "")
+        info = f"HTTP {r.status} {r.headers.get('Content-Type')} {enc} {len(raw)} bytes"
     if enc == "gzip" or raw[:2] == b"\x1f\x8b":
         raw = gzip.decompress(raw)
     elif enc == "br":
         import brotli  # pip install brotli
         raw = brotli.decompress(raw)
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise ValueError(f"not JSON ({info}): {raw[:200]!r}")
 
 
 def num(v):
@@ -127,15 +131,22 @@ def from_csgotrader(bases, crates):
 
 def from_skinport(bases, crates):
     items = fetch(SKINPORT, {"Accept-Encoding": "br"})
-    prices = {}
+    sample = [it for it in items if it.get("market_hash_name") == "★ Karambit | Doppler (Factory New)"]
+    print("skinport doppler sample:", json.dumps(sample)[:1500], file=sys.stderr)
+    prices, phases = {}, {}
     for it in items:
         name = it.get("market_hash_name", "")
         if name not in crates and base_name(name) not in bases:
             continue
-        p = num(it.get("min_price")) or num(it.get("suggested_price"))
-        if p:
-            prices[name] = round(p, 2)
-    return prices, {}, "Skinport"
+        # Prefer the median of recent sales; fall back to the cheapest listing.
+        p = num(it.get("median_price")) or num(it.get("suggested_price")) or num(it.get("min_price"))
+        if not p:
+            continue
+        phase = it.get("version") or it.get("phase")
+        if phase:
+            phases[f"{name}|{phase}"] = round(p, 2)
+        prices[name] = round(min(p, prices.get(name, p)), 2)
+    return prices, phases, "Skinport"
 
 
 def main():
