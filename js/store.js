@@ -10,11 +10,14 @@
       inv: [],
       history: [], // most recent drops, newest first
       stats: { opened: {}, tiers: {}, keys: 0, tradeups: 0, golds: 0, bestFloat: null, simulated: 0 },
-      settings: { sound: true, quick: false, count: 1 },
+      settings: { sound: true, quick: false, count: 1, autoclean: { on: false, minPrice: 0.1, maxAgeHours: 0, maxItems: 0, protect: true } },
     };
   }
   function merge(s) {
-    return { ...blank(), ...s, stats: { ...blank().stats, ...s.stats }, settings: { ...blank().settings, ...s.settings } };
+    const b = blank();
+    const settings = { ...b.settings, ...s.settings };
+    settings.autoclean = { ...b.settings.autoclean, ...(s.settings && s.settings.autoclean) };
+    return { ...b, ...s, stats: { ...b.stats, ...s.stats }, settings };
   }
 
   let state = blank();
@@ -109,10 +112,45 @@
     return { u: inv.u, k: inv.k, f: inv.f, st: inv.st, sv: inv.sv, c: inv.c, t: inv.t, o: inv.o };
   }
 
+  // ---------- auto-clean ----------
+  // Removes items by the rules in settings.autoclean. Returns how many were removed.
+  function isProtected(x) {
+    const it = CS.byKey.get(x.k);
+    return x.fav || (it && it.tier === CS.GOLD) || CS.patternOf(x);
+  }
+  function autoClean({ silent = false } = {}) {
+    const ac = state.settings.autoclean;
+    if (!ac || !ac.on) return 0;
+    const before = state.inv.length;
+    const now = Date.now();
+    const maxAge = ac.maxAgeHours > 0 ? ac.maxAgeHours * 3600000 : 0;
+    const safe = (x) => (ac.protect && isProtected(x)) || (!ac.protect && x.fav);
+    let inv = state.inv.filter((x) => {
+      if (safe(x)) return true;
+      if (ac.minPrice > 0 && (CS.price(x) || 0) < ac.minPrice) return false;
+      if (maxAge && now - x.t > maxAge) return false;
+      return true;
+    });
+    if (ac.maxItems > 0 && inv.length > ac.maxItems) {
+      // Over the cap: drop the cheapest unprotected items first.
+      const removable = inv.filter((x) => !safe(x)).sort((a, b) => (CS.price(a) || 0) - (CS.price(b) || 0) || a.t - b.t);
+      const cut = new Set(removable.slice(0, inv.length - ac.maxItems).map((x) => x.u));
+      inv = inv.filter((x) => !cut.has(x.u));
+    }
+    const removed = before - inv.length;
+    if (removed) {
+      state.inv = inv;
+      state.stats.autocleaned = (state.stats.autocleaned || 0) + removed;
+      if (!silent) { save(); emit(); }
+    }
+    return removed;
+  }
+
   // Adds drops to the inventory. Returns how many didn't fit under INV_MAX.
   function recordDrops(drops, crate, { countOpened = true } = {}) {
     const st = state.stats;
     let overflow = 0;
+    if (state.inv.length + drops.length > INV_MAX) autoClean({ silent: true });
     for (const d of drops) {
       const it = CS.byKey.get(d.k);
       if (countOpened) {
@@ -123,6 +161,7 @@
       if (state.inv.length < INV_MAX) state.inv.push(d);
       else overflow++;
     }
+    autoClean({ silent: true });
     for (const d of drops.slice(-HISTORY_MAX)) state.history.unshift(snapshot(d));
     if (crate && countOpened) {
       st.opened[crate.cat] = (st.opened[crate.cat] || 0) + drops.length;
@@ -207,6 +246,6 @@
     get saveError() { return saveError; },
     on: (fn) => listeners.add(fn),
     off: (fn) => listeners.delete(fn),
-    recordDrops, recordSimulation, remove, wipeInventory, toggleFav, tradeUp, setSetting, reset, exportJSON, importJSON,
+    autoClean, recordDrops, recordSimulation, remove, wipeInventory, toggleFav, tradeUp, setSetting, reset, exportJSON, importJSON,
   };
 })();

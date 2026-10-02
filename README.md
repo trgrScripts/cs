@@ -17,8 +17,8 @@ You can also host it for free with GitHub Pages (Settings → Pages → deploy f
 - **Knives and gloves.** Every finish in the case's gold pool, including Doppler and Gamma Doppler phases (Ruby, Sapphire, Black Pearl and Emerald are rare).
 - **Rare patterns.** Every skin rolls a pattern seed (0–999), and some seeds are worth far more than the rest: AK-47 | Case Hardened blue gems (#661 and the tier 1 and tier 2 seeds), Five-SeveN | Case Hardened blue gems, the Karambit | Case Hardened #387, and Fire & Ice Marble Fades. A hit gets a banner on the reveal, a tag in your inventory and a price multiplier. The seeds and multipliers live in `js/patterns.js`; it's a curated list of well-known seeds, not every premium pattern, so add more if you like.
 - **Market prices** for every item, wear, StatTrak™ and Souvenir variant, Doppler phases included, plus case prices. A price marked `~` is estimated from the nearest wear because nothing sold at that exact wear.
-- **Simulator.** Open anything from a hundred to a trillion containers (type `2.5b` or `1t`) and see what you spent, what it's worth, your profit or loss, your best drops, rare patterns and the lowest float. Runs of up to 10 million roll every case one by one. Bigger runs draw the totals directly from the same probabilities (item, wear, StatTrak™ and pattern chances), so even a trillion finishes in under a second with the same statistics. You choose which drops, if any, go into your inventory.
-- **Inventory** saved in your browser (IndexedDB, up to 250,000 items). Search, filter, sort by price or float, inspect, favourite, bulk-delete, or wipe it all.
+- **Simulator.** Open anything from a hundred to a trillion containers (type `2.5b` or `1t`) and see what you spent, what it's worth, your profit or loss, your best drops, rare patterns and the lowest float. Runs of up to 10 million roll every case one by one. Bigger runs draw the totals directly from the same probabilities (item, wear, StatTrak™ and pattern chances), so even a trillion finishes in under a second with the same statistics. You choose which drops go into your inventory: by grade (or rare patterns only), then optionally only a float range (e.g. 0 to 0.01), only items worth at least $X, only StatTrak™, and whether rare patterns are always kept. When there are more matches than room, the most valuable go in first.
+- **Inventory** saved in your browser (IndexedDB, up to 250,000 items). Search, filter, sort by price or float, inspect, favourite, bulk-delete, or wipe it all. **Auto-clean** can delete items worth less than $X, items older than N hours, or the cheapest items once you pass a size limit. It runs after every unbox and simulation and once a minute, and can protect favourites, ★ knives and gloves, and rare patterns.
 - **Trade-up contracts.** 10 items of one grade become 1 item of the next grade from the same cases. 5 Coverts become a knife or gloves. Shows the input cost and the expected return before you sign.
 - **Stats.** Your drop distribution against the odds, golds against the expected number, inventory value, lowest float and recent drops. You can back up and restore your inventory as a JSON file.
 
@@ -31,6 +31,10 @@ You can also host it for free with GitHub Pages (Settings → Pages → deploy f
 3. Steam Community Market listings
 
 You can run it by hand from the Actions tab (Update prices → Run workflow), or locally with `python3 scripts/build_prices.py`.
+
+## Not seeing a new feature?
+
+The footer shows the version you're running. If it's older than the latest commit, download the repo again (or `git pull`) and reload the page. Script links carry the version number, so a normal reload is enough.
 
 ## Updating the item data
 

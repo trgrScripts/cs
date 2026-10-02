@@ -149,7 +149,10 @@
         <div><div class="eyebrow">Saved in this browser</div><h1>Inventory</h1>
           <div class="inv-summary"><span><b>${big(s.inv.length)}</b> items</span><span>Worth <b class="good">${money(inventoryValue())}</b></span><span><b style="color:var(--gold)">${big(golds)}</b> ★ rare specials</span><span><b style="color:#f09a62">${big(sts)}</b> StatTrak™</span></div>
         </div>
-        ${s.inv.length ? `<button class="btn btn-danger" id="wipe" type="button">Wipe inventory</button>` : ""}
+        <div class="head-actions">
+          <button class="btn ${s.settings.autoclean.on ? "" : "btn-ghost"}" id="autoclean" type="button">${s.settings.autoclean.on ? "Auto-clean: on" : "Auto-clean"}</button>
+          ${s.inv.length ? `<button class="btn btn-danger" id="wipe" type="button">Wipe inventory</button>` : ""}
+        </div>
       </div>
       ${s.inv.length ? `
       <div class="toolbar">
@@ -174,6 +177,7 @@
       </div>
       <div id="inv-results"></div>` : `
       <div class="empty"><h3>Nothing here yet</h3><p>Open a case or capsule and your drops land here, with their float, pattern and price.</p><a class="btn btn-go" href="#/">Browse containers</a></div>`}`;
+    $("#autoclean").addEventListener("click", openAutoClean);
     if (!s.inv.length) return;
     $("#inv-kind").value = invView.kind;
     $("#inv-tier").value = invView.tier;
@@ -231,6 +235,53 @@
       }
     });
     draw();
+  }
+
+  function openAutoClean() {
+    const ac = store.state.settings.autoclean;
+    const ov = ui.openOverlay(`<div class="modal" role="dialog" aria-modal="true" aria-labelledby="ac-t" style="width:min(520px,100%)">
+      <form class="confirm ac-form" id="ac-form">
+        <h2 id="ac-t">Auto-clean</h2>
+        <p>Deletes items for you after every unbox and simulation, and once a minute. Leave a box at 0 to skip that rule.</p>
+        <label class="toggle"><input type="checkbox" id="ac-on" ${ac.on ? "checked" : ""}> Auto-clean is on</label>
+        <label class="ac-row">Delete items worth less than <span>$ <input class="field mono" id="ac-price" type="number" min="0" step="0.01" value="${ac.minPrice}"></span></label>
+        <label class="ac-row">Delete items older than <span><input class="field mono" id="ac-age" type="number" min="0" step="1" value="${ac.maxAgeHours}"> hours</span></label>
+        <label class="ac-row">Keep at most <span><input class="field mono" id="ac-max" type="number" min="0" step="100" value="${ac.maxItems}"> items</span></label>
+        <small class="muted">Over the limit, the cheapest items go first.</small>
+        <label class="toggle"><input type="checkbox" id="ac-protect" ${ac.protect ? "checked" : ""}> Never delete favourites, ★ knives and gloves, or rare patterns</label>
+        <p class="muted" id="ac-preview"></p>
+      </form>
+      <div class="modal-actions"><button class="btn btn-ghost" type="button" data-act="cancel">Cancel</button><button class="btn btn-go" type="button" data-act="save" data-autofocus>Save</button></div>
+    </div>`);
+    const read = () => ({
+      on: $("#ac-on", ov).checked,
+      minPrice: Math.max(0, +$("#ac-price", ov).value || 0),
+      maxAgeHours: Math.max(0, +$("#ac-age", ov).value || 0),
+      maxItems: Math.max(0, Math.floor(+$("#ac-max", ov).value || 0)),
+      protect: $("#ac-protect", ov).checked,
+    });
+    // Preview how many items the rules would remove right now.
+    const preview = () => {
+      const r = read();
+      const now = Date.now();
+      const safe = (x) => (r.protect ? x.fav || CS.byKey.get(x.k)?.tier === GOLD || CS.patternOf(x) : x.fav);
+      let left = store.state.inv.filter((x) => safe(x) || !((r.minPrice > 0 && (CS.price(x) || 0) < r.minPrice) || (r.maxAgeHours > 0 && now - x.t > r.maxAgeHours * 3600000)));
+      let n = store.state.inv.length - left.length;
+      if (r.maxItems > 0 && left.length > r.maxItems) n += Math.min(left.length - r.maxItems, left.filter((x) => !safe(x)).length);
+      $("#ac-preview", ov).textContent = r.on ? `Right now this would delete ${big(n)} of your ${big(store.state.inv.length)} items.` : "Auto-clean is off.";
+    };
+    ov.addEventListener("input", preview);
+    preview();
+    ov.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act]");
+      if (!b) return;
+      if (b.dataset.act === "save") {
+        store.setSetting("autoclean", read());
+        const n = store.autoClean();
+        toast(read().on ? `Auto-clean saved${n ? `: deleted ${big(n)} items` : ""}` : "Auto-clean turned off");
+      }
+      ui.closeOverlay(ov);
+    });
   }
 
   // ---------- trade up ----------
@@ -338,9 +389,13 @@
   }
 
   // ---------- simulator ----------
-  const sim = { crateId: null, n: 100000, keep: "gold", running: false, stop: false, result: null, resultCrate: null, ms: 0 };
+  const sim = {
+    crateId: null, n: 100000, keep: "gold", running: false, stop: false, result: null, resultCrate: null, ms: 0,
+    filters: { fmin: 0, fmax: 1, minPrice: 0, stOnly: false, patterns: true },
+  };
   const KEEP = [
     ["none", "Nothing, just show the results", null],
+    ["patterns", "Rare patterns only", null],
     ["gold", "★ Rare specials only", GOLD],
     ["covert", "Covert and up", 5],
     ["classified", "Classified and up", 4],
@@ -383,13 +438,31 @@
           <span class="spacer"></span>
           <button class="btn btn-go btn-big" id="sim-run" type="button" ${sim.running ? "disabled" : ""}>Run simulation</button>
         </div>
+        <fieldset class="keep-filters" id="keep-filters" ${sim.keep === "none" ? "disabled" : ""}>
+          <legend class="eyebrow">Only keep drops that match</legend>
+          <label class="mini">Float from <input class="field mono" id="kf-min" type="number" min="0" max="1" step="0.001" value="${sim.filters.fmin}"></label>
+          <label class="mini">to <input class="field mono" id="kf-max" type="number" min="0" max="1" step="0.001" value="${sim.filters.fmax}"></label>
+          <label class="mini">Worth at least $ <input class="field mono" id="kf-price" type="number" min="0" step="0.01" value="${sim.filters.minPrice}"></label>
+          <label class="toggle"><input type="checkbox" id="kf-st" ${sim.filters.stOnly ? "checked" : ""}> StatTrak™ only</label>
+          <label class="toggle"><input type="checkbox" id="kf-pat" ${sim.filters.patterns ? "checked" : ""}> Always keep rare patterns</label>
+          <small class="muted">Float filters apply to skins only; stickers and other items without a float are skipped while a float range is set.</small>
+        </fieldset>
         <div class="progress" id="sim-progress" ${sim.running ? "" : "hidden"}><span class="track"><i id="sim-bar"></i></span><span id="sim-pct" class="mono">0%</span><button class="btn btn-ghost" id="sim-stop" type="button">Stop</button></div>
       </section>
       <div id="sim-results">${sim.result ? resultsHTML(sim.result, sim.resultCrate) : ""}</div>`;
     $("#sim-crate").value = sim.crateId;
     $("#sim-keep").value = sim.keep;
     $("#sim-crate").addEventListener("change", (e) => { location.hash = "#/simulator/" + encodeURIComponent(e.target.value); });
-    $("#sim-keep").addEventListener("change", (e) => { sim.keep = e.target.value; });
+    $("#sim-keep").addEventListener("change", (e) => {
+      sim.keep = e.target.value;
+      $("#keep-filters").disabled = sim.keep === "none";
+    });
+    const f = sim.filters;
+    $("#kf-min").addEventListener("input", (e) => { f.fmin = Math.min(1, Math.max(0, +e.target.value || 0)); });
+    $("#kf-max").addEventListener("input", (e) => { f.fmax = e.target.value === "" ? 1 : Math.min(1, Math.max(0, +e.target.value)); });
+    $("#kf-price").addEventListener("input", (e) => { f.minPrice = Math.max(0, +e.target.value || 0); });
+    $("#kf-st").addEventListener("change", (e) => { f.stOnly = e.target.checked; });
+    $("#kf-pat").addEventListener("change", (e) => { f.patterns = e.target.checked; });
     const nInput = $("#sim-n");
     const syncN = () => {
       const n = parseCount(nInput.value);
@@ -410,6 +483,8 @@
     if (sim.running) return;
     const crate = CS.crateById.get(sim.crateId);
     const keepTier = KEEP.find((k) => k[0] === sim.keep)[2];
+    const keep = sim.keep === "none" ? null : { ...sim.filters, tier: keepTier, patterns: sim.keep === "patterns" || sim.filters.patterns };
+    store.autoClean();
     const room = store.INV_MAX - store.state.inv.length;
     sim.running = true;
     sim.stop = false;
@@ -417,7 +492,7 @@
     $("#sim-progress").hidden = false;
     const t0 = performance.now();
     const result = await CS.simulate(crate, sim.n, {
-      keepTier,
+      keep,
       keepMax: Math.max(0, room),
       shouldStop: () => sim.stop,
       onProgress: (f) => {

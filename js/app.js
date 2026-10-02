@@ -67,6 +67,9 @@
   });
 
   store.ready.then(() => {
+    // Age-based auto-clean needs a clock, not just new drops.
+    store.autoClean();
+    setInterval(() => store.autoClean(), 60000);
     renderTop();
     render();
     if (store.saveError) toast("Your browser is blocking storage, so drops won't be saved after you close this tab.");

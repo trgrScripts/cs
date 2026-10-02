@@ -23,14 +23,16 @@ jobs:
       - run: pip install brotli
       - run: python3 scripts/build_prices.py
         timeout-minutes: 25
+      - name: Point index.html at the new prices so browsers don't use a cached copy
+        run: sed -i -E "s/prices\.js\?v=[^\"]*/prices.js?v=$(date -u +%Y%m%d)/" index.html
       - name: Commit updated prices
         run: |
-          if git diff --quiet -- js/prices.js && git ls-files --error-unmatch js/prices.js >/dev/null 2>&1; then
+          if git diff --quiet -- js/prices.js; then
             echo "Prices unchanged"; exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add js/prices.js
+          git add js/prices.js index.html
           git commit -m "Update item prices"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"

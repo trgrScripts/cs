@@ -388,7 +388,48 @@
   // ---------- bulk simulation ----------
   // Opens `n` containers in chunks without building inventory objects for every drop.
   // Counts are kept per item × wear × StatTrak so the total value can be priced exactly.
-  // `keepTier`: drops at or above this tier are returned as real items (null keeps none).
+  // `keep` (see normKeep) decides which drops come back as real items for the inventory.
+  // ---------- what a simulation keeps ----------
+  // keep: { tier (lowest grade kept, null = none), fmin, fmax (float range), minPrice,
+  //         stOnly, patterns (always keep rare patterns) }
+  function normKeep(k) {
+    if (!k) return null;
+    const fmin = Math.max(0, +k.fmin || 0), fmax = Math.min(1, k.fmax == null ? 1 : +k.fmax);
+    return { tier: k.tier, fmin, fmax, floatOn: fmin > 0 || fmax < 1, minPrice: +k.minPrice || 0, stOnly: !!k.stOnly, patterns: !!k.patterns };
+  }
+  function keeps(k, it, drop) {
+    if (k.patterns && patternOf(drop)) return true;
+    if (k.tier == null || it.tier < k.tier) return false;
+    if (k.stOnly && !drop.st) return false;
+    if (k.floatOn && (drop.f == null || drop.f < k.fmin || drop.f > k.fmax)) return false;
+    if (k.minPrice > 0 && (price(drop) || 0) < k.minPrice) return false;
+    return true;
+  }
+  // Pieces of the raw [0,1] wear roll that land a skin's float in [a, b].
+  function rawPieces(it, a, b) {
+    const span = it.max - it.min;
+    const ra = (a - it.min) / span, rb = (b - it.min) / span;
+    const out = [];
+    WEARS.forEach((B, i) => {
+      const lo = Math.max(ra, B.lo), hi = Math.min(rb, B.hi);
+      if (hi > lo) out.push({ lo, hi, w: BRACKET_WEIGHTS[i] * (hi - lo) / (B.hi - B.lo) });
+    });
+    return out;
+  }
+  const floatProb = (it, a, b) => rawPieces(it, a, b).reduce((s, p) => s + p.w, 0);
+  function sampleFloatIn(it, a, b) {
+    const pieces = rawPieces(it, a, b);
+    if (!pieces.length) return Math.fround(Math.min(Math.max(a, it.min), it.max));
+    const pc = weighted(pieces.map((p) => [p, p.w]));
+    return Math.fround(it.min + (pc.lo + random() * (pc.hi - pc.lo)) * (it.max - it.min));
+  }
+  // A pattern seed that is not one of the rare ones (those are counted separately).
+  function plainSeed(it) {
+    let s = randInt(1000);
+    while (it.patterns && it.patterns.has(s)) s = randInt(1000);
+    return s;
+  }
+
   // Up to EXACT_MAX openings are rolled one by one; beyond that the totals are drawn
   // statistically (see simulateFast), which gives the same distribution in milliseconds.
   const EXACT_MAX = 10000000;
@@ -396,7 +437,8 @@
     return n > EXACT_MAX ? simulateFast(crate, n, opts) : simulateExact(crate, n, opts);
   }
 
-  function simulateExact(crate, n, { keepTier = null, keepMax = 100000, onProgress, shouldStop } = {}) {
+  function simulateExact(crate, n, { keep: keepIn = null, keepMax = 100000, onProgress, shouldStop } = {}) {
+    const keep = normKeep(keepIn);
     return new Promise((resolve) => {
       const counts = new Map(); // key -> count, key = itemIdx*16 + wear*2 + st
       const tiers = {};
@@ -422,9 +464,12 @@
           counts.set(key, (counts.get(key) || 0) + 1);
           tiers[it.tier] = (tiers[it.tier] || 0) + 1;
           if (f != null && (bestFloat == null || f < bestFloat.f)) bestFloat = { it, f, st };
-          if (keepTier != null && it.tier >= keepTier) {
-            if (kept.length < keepMax) kept.push(makeDrop(it, crate, { f, st, s: seed }));
-            else keptOverflow++;
+          if (keep && ((keep.tier != null && it.tier >= keep.tier) || (keep.patterns && seed != null && it.patterns.has(seed)))) {
+            const drop = makeDrop(it, crate, { f, st, s: seed });
+            if (keeps(keep, it, drop)) {
+              if (kept.length < keepMax) kept.push(drop);
+              else keptOverflow++;
+            }
           }
         }
         if (onProgress) onProgress(done / n);
@@ -538,7 +583,8 @@
     return list;
   }
 
-  function simulateFast(crate, n, { keepTier = null, keepMax = 100000, onProgress } = {}) {
+  function simulateFast(crate, n, { keep: keepIn = null, keepMax = 100000, onProgress } = {}) {
+    const keep = normKeep(keepIn);
     return new Promise((resolve) => setTimeout(() => {
       const souv = crate.cat === "souvenir";
       const probs = itemProbs(crate);
@@ -596,15 +642,34 @@
         if (base != null) value += base * (sp.pat.mult - 1) * sp.cnt;
       }
       specials.sort((x, y) => (y.p || 0) - (x.p || 0));
-      // Real items for the inventory, rarest first, up to the room left.
-      if (keepTier != null) {
-        const eligible = probs.map(([it], i) => [it, counts[i]]).filter(([it, c]) => c && it.tier >= keepTier).sort((a, b) => b[0].tier - a[0].tier);
+      // Real items for the inventory, most valuable first, up to the room left.
+      if (keep) {
         let room = keepMax;
-        for (const [it, c] of eligible) {
-          const make = Math.min(c, room);
-          for (let j = 0; j < make; j++) kept.push(makeDrop(it, crate));
-          room -= make;
-          keptOverflow += c - make;
+        const make = (count, build) => {
+          const m = Math.min(count, room);
+          for (let j = 0; j < m; j++) kept.push(build());
+          room -= m;
+          keptOverflow += count - m;
+        };
+        if (keep.patterns) {
+          for (const sp of specials) {
+            make(sp.cnt, () => makeDrop(sp.it, crate, { st: sp.st, f: sampleFloatIn(sp.it, sp.wear.lo, sp.wear.hi), s: sp.pat.seeds[randInt(sp.pat.seeds.length)] }));
+          }
+        }
+        if (keep.tier != null) {
+          const cells = rows.filter((c) => c.it.tier >= keep.tier && (!keep.stOnly || c.st) && (!keep.minPrice || (c.p || 0) >= keep.minPrice))
+            .sort((x, y) => (y.p || 0) - (x.p || 0));
+          for (const c of cells) {
+            const it = c.it;
+            if (!it.painted) {
+              if (!keep.floatOn) make(c.cnt, () => makeDrop(it, crate, { st: c.st }));
+              continue;
+            }
+            const a = Math.max(keep.fmin, c.wear.lo), b = Math.min(keep.fmax, c.wear.hi);
+            if (b <= a) continue;
+            const q = keep.floatOn ? Math.min(1, floatProb(it, a, b) / floatProb(it, c.wear.lo, c.wear.hi)) : 1;
+            make(binomial(c.cnt, q), () => makeDrop(it, crate, { st: c.st, f: sampleFloatIn(it, a, b), s: plainSeed(it) }));
+          }
         }
       }
       rows.sort((x, y) => (y.p || 0) - (x.p || 0) || y.it.tier - x.it.tier);
