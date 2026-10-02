@@ -11,14 +11,25 @@ You can also host it for free with GitHub Pages (Settings → Pages → deploy f
 ## What's in it
 
 - **471 containers** with their real contents: 44 weapon cases, 100 sticker capsules, 139 autograph capsules, 164 souvenir packages, 11 patch/pin packs and 13 music kit boxes.
+- **The CS2 unlock screen.** Click a case to get the "Unlock Container" screen: the case, a "Contains one of the following" strip with the yellow ★ tile, and the key bar. Unlocking plays the horizontal reel with tick sounds and stops on your drop. You can open 1, 2, 3, 5 or 10 at once, or turn on Quick to skip the reel.
 - **Real odds.** Weapon cases use Valve's published rates: Mil-Spec 79.92%, Restricted 15.98%, Classified 3.20%, Covert 0.64%, ★ Rare Special 0.26%. Capsules and souvenir packages use the same 1-in-5 step between grades.
-- **Float system like the game.** Each skin gets a wear value inside its own float cap (for example, the AWP Asiimov can't be Factory New). The value is shown at full 32-bit precision, with its exterior (FN/MW/FT/WW/BS), a pattern seed from 0 to 999, and a 10% StatTrak™ chance in weapon cases.
+- **Float system like the game.** Each skin gets a wear value inside its own float cap, shown at full 32-bit precision, with its exterior (FN/MW/FT/WW/BS), a pattern seed from 0 to 999, and a 10% StatTrak™ chance in weapon cases.
 - **Knives and gloves.** Every finish in the case's gold pool, including Doppler and Gamma Doppler phases (Ruby, Sapphire, Black Pearl and Emerald are rare).
-- **The unbox reel.** A CS-style spinning strip with tick sounds. You can open 1, 2, 3, 5 or 10 at once, or turn on Quick open to skip the animation.
-- **Inventory** saved in your browser. Search, filter by type and rarity, sort by float, inspect items, favourite them and bulk-delete.
-- **Trade-up contracts.** 10 items of one grade become 1 item of the next grade from the same cases. 5 Coverts become a knife or gloves. The output float uses CS2's normalised averaging.
-- **Stats.** Your drop distribution compared with the case odds, your golds compared with the expected number, your lowest float, recent drops, and how much you would have spent on keys.
-- **Backup and restore** your inventory as a JSON file from the Stats page.
+- **Market prices** for every item, wear, StatTrak™ and Souvenir variant, Doppler phases included, plus case prices. A price marked `~` is estimated from the nearest wear because nothing sold at that exact wear.
+- **Simulator.** Open up to 10 million containers in a few seconds and see what you spent, what it's worth, your profit or loss, your best drops and the lowest float. You choose which drops, if any, go into your inventory.
+- **Inventory** saved in your browser (IndexedDB, up to 250,000 items). Search, filter, sort by price or float, inspect, favourite, bulk-delete, or wipe it all.
+- **Trade-up contracts.** 10 items of one grade become 1 item of the next grade from the same cases. 5 Coverts become a knife or gloves. Shows the input cost and the expected return before you sign.
+- **Stats.** Your drop distribution against the odds, golds against the expected number, inventory value, lowest float and recent drops. You can back up and restore your inventory as a JSON file.
+
+## Prices
+
+`js/prices.js` is rebuilt every day by the **Update prices** GitHub Action (`.github/workflows/prices.yml`), which runs `scripts/build_prices.py` and commits the result. Each source fills only the items the earlier ones lack:
+
+1. Skinport (median of recent sales; the only source for Doppler phases)
+2. market.csgo.com
+3. Steam Community Market listings
+
+You can run it by hand from the Actions tab (Update prices → Run workflow), or locally with `python3 scripts/build_prices.py`.
 
 ## Updating the item data
 

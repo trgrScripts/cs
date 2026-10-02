@@ -4,11 +4,21 @@
   const CS = (window.CS = window.CS || {});
 
   // ---------- randomness ----------
-  const buf = new Uint32Array(1);
+  // sfc32, seeded from the browser's crypto RNG: fast enough for millions of rolls.
+  const seed = new Uint32Array(4);
+  crypto.getRandomValues(seed);
+  let a = seed[0], b = seed[1], c = seed[2], d = seed[3];
   function random() {
-    crypto.getRandomValues(buf);
-    return buf[0] / 4294967296;
+    a |= 0; b |= 0; c |= 0; d |= 0;
+    const t = (((a + b) | 0) + d) | 0;
+    d = (d + 1) | 0;
+    a = b ^ (b >>> 9);
+    b = (c + (c << 3)) | 0;
+    c = (c << 21) | (c >>> 11);
+    c = (c + t) | 0;
+    return (t >>> 0) / 4294967296;
   }
+  for (let i = 0; i < 16; i++) random();
   function randInt(n) {
     return Math.floor(random() * n);
   }
@@ -37,6 +47,7 @@
   ];
   const STICKER_TIER_NAMES = { 2: "High Grade", 3: "Remarkable", 4: "Exotic", 5: "Extraordinary" };
   const GOLD = 6;
+  const KEY_PRICE = 2.49; // Steam price of a case key, USD
 
   // ---------- items ----------
   const IMG = D.img;
@@ -54,6 +65,7 @@
     kind: a[7],
     phase: a[8],
     key: a[9],
+    market: a[10] || a[0],
   }));
   const byKey = new Map(items.map((it) => [it.key, it]));
   for (const it of items) {
@@ -75,6 +87,7 @@
   const crates = D.crates.map((c) => ({
     id: c.id,
     name: c.n,
+    market: c.m || c.n,
     cat: c.t,
     date: c.d,
     img: c.i ? IMG[+c.i[0]] + c.i.slice(1) : "",
@@ -205,7 +218,9 @@
   }
   function floatText(f) {
     // CS2 stores wear as a 32-bit float and shows its full decimal expansion.
-    return f == null ? "" : String(f);
+    if (f == null) return "";
+    // Avoid exponent notation for tiny floats (e.g. 5.2e-7).
+    return f < 1e-4 ? f.toFixed(20).replace(/0+$/, "") : String(f);
   }
   function thumb(it, size) {
     if (!it || !it.img) return "";
@@ -267,13 +282,144 @@
     return makeDrop(it, null, { f: fl, st, c: src ? src.c : inputs[0].c, origin: "tradeup" });
   }
 
+  // ---------- prices ----------
+  const PR = window.CS_PRICES || { p: {}, ph: {} };
+  const P = PR.p || {};
+  const PH = PR.ph || {};
+  const hasPrices = Object.keys(P).length > 0;
+
+  function marketName(it, wear, st, sv) {
+    let n = it.market;
+    if (st && !/StatTrak/.test(n)) n = n.startsWith("★ ") ? "★ StatTrak™ " + n.slice(2) : "StatTrak™ " + n;
+    if (sv) n = "Souvenir " + n;
+    if (wear) n += " (" + wear.name + ")";
+    return n;
+  }
+  // Exact market price, or null.
+  function lookup(it, wear, st, sv) {
+    const n = marketName(it, wear, st, sv);
+    if (it.phase && PH[n + "|" + it.phase] != null) return PH[n + "|" + it.phase];
+    return P[n] != null ? P[n] : null;
+  }
+  // Price of one copy of an item. `wear` may be a wear object or null.
+  // When the market has no sales for this exact variant, it is estimated from the
+  // nearest wear, or from the plain version with a typical StatTrak™/Souvenir premium.
+  const priceCache = new Map();
+  function priceOf(it, wear, st, sv) {
+    const key = it.idx * 64 + (wear ? WEARS.indexOf(wear) : 5) * 4 + (st ? 2 : 0) + (sv ? 1 : 0);
+    if (priceCache.has(key)) return priceCache.get(key);
+    let p = lookup(it, wear, st, sv);
+    if (p == null) p = estimate(it, wear, st, sv);
+    priceCache.set(key, p);
+    return p;
+  }
+  function estimate(it, wear, st, sv) {
+    if (wear) {
+      const i = WEARS.indexOf(wear);
+      let best = null, dist = 9;
+      for (const w of possibleWears(it)) {
+        const p = lookup(it, w, st, sv);
+        const d = Math.abs(WEARS.indexOf(w) - i);
+        if (p != null && d < dist) { best = p; dist = d; }
+      }
+      if (best != null) return best;
+    }
+    if (st) { const p = priceOf(it, wear, 0, sv); if (p != null) return Math.round(p * 200) / 100; }
+    if (sv) { const p = priceOf(it, wear, st, 0); if (p != null) return Math.round(p * 150) / 100; }
+    return null;
+  }
+  function isEstimate(inv) {
+    const it = byKey.get(inv.k);
+    return !!it && lookup(it, wearOf(inv.f), inv.st, inv.sv) == null && price(inv) != null;
+  }
+  function price(inv) {
+    const it = byKey.get(inv.k);
+    return it ? priceOf(it, wearOf(inv.f), inv.st, inv.sv) : null;
+  }
+  // Cheapest and dearest normal (non-StatTrak) copy across the wears a skin exists in.
+  function priceRange(it, sv) {
+    const wears = it.painted ? possibleWears(it) : [null];
+    let lo = null, hi = null;
+    for (const w of wears) {
+      const p = lookup(it, w, false, sv);
+      if (p == null) continue;
+      lo = lo == null ? p : Math.min(lo, p);
+      hi = hi == null ? p : Math.max(hi, p);
+    }
+    return lo == null ? null : [lo, hi];
+  }
+  function cratePrice(crate) {
+    return P[crate.market] != null ? P[crate.market] : null;
+  }
+  // What one opening costs: the container plus a key for weapon cases.
+  function openCost(crate) {
+    return (cratePrice(crate) || 0) + (crate.needsKey ? KEY_PRICE : 0);
+  }
+  function money(n) {
+    if (n == null) return "–";
+    const abs = Math.abs(n);
+    const s = abs >= 1e6 ? (abs / 1e6).toFixed(2) + "M" : abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return (n < 0 ? "-$" : "$") + s;
+  }
+
+  // ---------- bulk simulation ----------
+  // Opens `n` containers in chunks without building inventory objects for every drop.
+  // Counts are kept per item × wear × StatTrak so the total value can be priced exactly.
+  // `keepTier`: drops at or above this tier are returned as real items (null keeps none).
+  function simulate(crate, n, { keepTier = null, keepMax = 100000, onProgress, shouldStop } = {}) {
+    return new Promise((resolve) => {
+      const counts = new Map(); // key -> count, key = itemIdx*16 + wear*2 + st
+      const tiers = {};
+      const kept = [];
+      let done = 0, keptOverflow = 0, best = null, bestFloat = null;
+      const souv = crate.cat === "souvenir";
+      const CHUNK = 50000;
+      function step() {
+        const end = Math.min(n, done + CHUNK);
+        for (; done < end; done++) {
+          const it = rollItem(crate);
+          const f = rollFloat(it);
+          const st = crate.cat === "case" && it.stattrakable && random() < 0.1 ? 1 : 0;
+          const w = f == null ? 5 : f < 0.07 ? 0 : f < 0.15 ? 1 : f < 0.38 ? 2 : f < 0.45 ? 3 : 4;
+          const key = it.idx * 16 + w * 2 + st;
+          counts.set(key, (counts.get(key) || 0) + 1);
+          tiers[it.tier] = (tiers[it.tier] || 0) + 1;
+          if (f != null && (bestFloat == null || f < bestFloat.f)) bestFloat = { it, f, st };
+          if (keepTier != null && it.tier >= keepTier) {
+            if (kept.length < keepMax) kept.push(makeDrop(it, crate, { f, st }));
+            else keptOverflow++;
+          }
+        }
+        if (onProgress) onProgress(done / n);
+        if (done < n && !(shouldStop && shouldStop())) return setTimeout(step, 0);
+        // Price everything once at the end.
+        let value = 0, unpriced = 0;
+        const rows = [];
+        for (const [key, cnt] of counts) {
+          const it = items[Math.floor(key / 16)];
+          const w = (key % 16) >> 1;
+          const st = key & 1;
+          const p = priceOf(it, w === 5 ? null : WEARS[w], st, souv && (it.kind === "weapon" || it.kind === "knife"));
+          if (p == null) unpriced += cnt;
+          else value += p * cnt;
+          rows.push({ it, wear: w === 5 ? null : WEARS[w], st, cnt, p });
+        }
+        rows.sort((x, y) => (y.p || 0) - (x.p || 0) || y.it.tier - x.it.tier);
+        best = rows[0] || null;
+        resolve({ opened: done, tiers, value, unpriced, rows, best, bestFloat, kept, keptOverflow, cost: openCost(crate) * done });
+      }
+      setTimeout(step, 0);
+    });
+  }
+
   Object.assign(CS, {
+    prices: PR, hasPrices, marketName, priceOf, price, isEstimate, priceRange, cratePrice, openCost, money, simulate,
     random, randInt, weighted,
     TIERS, GOLD, WEARS, CATEGORIES, catById,
     items, byKey, crates, crateById,
     rollItem, openCrate, makeDrop, wearOf, rollFloat, possibleWears,
     tierColor, tierName, fullName, floatText, thumb,
     tradeUpSize, tradeUpEligible, tradeUpOutcomes, signTradeUp,
-    KEY_PRICE: 2.49,
+    KEY_PRICE,
   });
 })();

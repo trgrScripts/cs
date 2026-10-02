@@ -22,27 +22,32 @@
         <a href="#/" data-route="cases">Containers</a>
         <a href="#/inventory" data-route="inventory">Inventory <span class="count" id="inv-count">0</span></a>
         <a href="#/tradeup" data-route="tradeup">Trade Up</a>
+        <a href="#/simulator" data-route="simulator">Simulator</a>
         <a href="#/stats" data-route="stats">Stats</a>
       </nav>
       <div class="top-tools">
-        <span class="wallet" id="wallet" title="What the keys for your opened cases would have cost">Saved on keys <b>$0.00</b></span>
         <button class="icon-btn" id="sound-btn" type="button" aria-label="Sound"></button>
       </div>
     </div>
   </header>
 
   <main id="view" tabindex="-1"></main>
+  <div id="scene"></div>
 
   <footer class="site">
-    Item data from the open <a href="https://github.com/ByMykel/CSGO-API" target="_blank" rel="noopener">CSGO-API</a> project, images from Steam.
+    Item data from the open <a href="https://github.com/ByMykel/CSGO-API" target="_blank" rel="noopener">CSGO-API</a> project, images from Steam, prices from Skinport's public market data (updated daily).
     Drop odds use Valve's published case rates; float and Doppler phase rates are community estimates.
     Everything is simulated and free. Not affiliated with Valve.
   </footer>
 
   <script src="js/data.js"></script>
+  <script src="js/prices.js"></script>
   <script src="js/engine.js"></script>
   <script src="js/store.js"></script>
   <script src="js/audio.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/scene.js"></script>
+  <script src="js/views.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
