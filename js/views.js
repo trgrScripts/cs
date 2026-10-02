@@ -4,7 +4,7 @@
   const store = CS.store;
   const GOLD = CS.GOLD;
   const ui = CS.ui;
-  const { esc, $, $$, pct, money, year, ago, big, imgTag, toast, itemCard, wearBar, confirmBox, choose, reduceMotion } = ui;
+  const { esc, $, $$, pct, money, year, ago, big, count, imgTag, toast, itemCard, wearBar, confirmBox, choose, reduceMotion } = ui;
   const view = document.getElementById("view");
 
   function useInTradeUp(inv) {
@@ -346,8 +346,16 @@
     ["classified", "Classified and up", 4],
     ["all", `Everything (up to ${big(store.INV_MAX)} items)`, 0],
   ];
-  const PRESETS = [100, 1000, 10000, 100000, 1000000, 10000000];
-  const short = (n) => (n >= 1e6 ? n / 1e6 + "M" : n >= 1e3 ? n / 1e3 + "K" : String(n));
+  const SIM_MAX = 1e12;
+  const PRESETS = [1000, 100000, 1e6, 1e7, 1e8, 1e9, 1e10, 1e12];
+  const short = (n) => (n >= 1e12 ? n / 1e12 + "T" : n >= 1e9 ? n / 1e9 + "B" : n >= 1e6 ? n / 1e6 + "M" : n >= 1e3 ? n / 1e3 + "K" : String(n));
+  // Accepts "2500000", "2,500,000", "2.5m", "3b", "1t".
+  function parseCount(text) {
+    const m = String(text).trim().toLowerCase().replace(/[,_\s]/g, "").match(/^(\d+(?:\.\d+)?)([kmbt])?$/);
+    if (!m) return null;
+    const n = Math.floor(parseFloat(m[1]) * ({ k: 1e3, m: 1e6, b: 1e9, t: 1e12 }[m[2]] || 1));
+    return Math.max(1, Math.min(SIM_MAX, n));
+  }
 
   function renderSimulator(id) {
     if (id && CS.crateById.has(id)) sim.crateId = id;
@@ -358,14 +366,14 @@
     view.innerHTML = `
       <div class="view-head">
         <div><div class="eyebrow">Bulk simulator</div><h1>Simulate openings</h1>
-        <p>Open up to 10 million containers in seconds and see what you'd really get back. Every drop rolls the same odds, floats and StatTrak™ as a normal unbox and is priced at market value.</p></div>
+        <p>Open anything from a hundred to a trillion containers and see what you'd really get back, priced at market value. Up to 10 million are rolled one by one. Bigger runs draw the totals straight from the same odds, wears, StatTrak™ and pattern chances, so they finish instantly with the same statistics.</p></div>
       </div>
       <section class="panel sim-form">
         <div class="sim-row">
           <label class="fieldset"><span class="eyebrow">Container</span>
             <select class="field" id="sim-crate">${groups}</select></label>
           <label class="fieldset"><span class="eyebrow">How many</span>
-            <input class="field mono" id="sim-n" type="number" min="1" max="10000000" step="1" value="${sim.n}"></label>
+            <input class="field mono" id="sim-n" type="text" inputmode="numeric" autocomplete="off" value="${big(sim.n)}" aria-describedby="sim-n-hint"><small class="muted" id="sim-n-hint">Type a number or use k, m, b, t: 2.5b</small></label>
           <label class="fieldset"><span class="eyebrow">Add to inventory</span>
             <select class="field" id="sim-keep">${KEEP.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join("")}</select></label>
         </div>
@@ -384,12 +392,15 @@
     $("#sim-keep").addEventListener("change", (e) => { sim.keep = e.target.value; });
     const nInput = $("#sim-n");
     const syncN = () => {
-      sim.n = Math.max(1, Math.min(10000000, Math.floor(+nInput.value || 1)));
+      const n = parseCount(nInput.value);
+      nInput.setAttribute("aria-invalid", n == null ? "true" : "false");
+      if (n == null) return;
+      sim.n = n;
       $("#sim-total").textContent = money(each * sim.n);
       $$("[data-preset]").forEach((b) => b.setAttribute("aria-pressed", +b.dataset.preset === sim.n));
     };
     nInput.addEventListener("input", syncN);
-    $$("[data-preset]").forEach((b) => b.addEventListener("click", () => { nInput.value = b.dataset.preset; syncN(); }));
+    $$("[data-preset]").forEach((b) => b.addEventListener("click", () => { nInput.value = big(+b.dataset.preset); syncN(); }));
     $("#sim-stop").addEventListener("click", () => { sim.stop = true; });
     $("#sim-run").addEventListener("click", runSim);
     bindResults();
@@ -433,7 +444,7 @@
     const top = r.rows.filter((x) => x.p != null).slice(0, 12);
     const bf = r.bestFloat;
     return `
-      <div class="section-head" style="margin-top:8px"><h2>${big(r.opened)} × ${esc(crate.name)}</h2><span class="muted">${(sim.ms / 1000).toFixed(1)}s</span></div>
+      <div class="section-head" style="margin-top:8px"><h2>${big(r.opened)} × ${esc(crate.name)}</h2><span class="muted">${r.sampled ? "Totals sampled statistically · " : ""}${sim.ms < 1000 ? Math.max(1, Math.round(sim.ms)) + " ms" : (sim.ms / 1000).toFixed(1) + " s"}</span></div>
       <div class="tiles">
         <div class="tile"><div class="eyebrow">Spent</div><div class="v">${money(r.cost)}</div><p>${money(CS.openCost(crate))} per open${crate.needsKey ? " incl. key" : ""}</p></div>
         <div class="tile"><div class="eyebrow">Unboxed value</div><div class="v">${money(r.value)}</div><p>${r.unpriced ? `${big(r.unpriced)} drops had no market price` : "At current market prices"}</p></div>
@@ -449,7 +460,7 @@
           <div class="section-head"><h2>Drops by grade</h2><span class="muted">yours vs odds</span></div>
           <ul class="dist">${crate.tiers.map((t) => {
             const n = r.tiers[t.tier] || 0;
-            return `<li><span style="color:${CS.tierColor(t.tier)}">${esc(CS.tierName(t.tier, t.items[0].kind))}</span><span class="bar"><i style="width:${Math.max((n / total) * 100, n ? 1 : 0)}%;background:${CS.tierColor(t.tier)}"></i></span><span class="mono">${big(n)}</span><span class="mono exp">${pct(n / total)} / ${pct(t.p)}</span></li>`;
+            return `<li><span style="color:${CS.tierColor(t.tier)}">${esc(CS.tierName(t.tier, t.items[0].kind))}</span><span class="bar"><i style="width:${Math.max((n / total) * 100, n ? 1 : 0)}%;background:${CS.tierColor(t.tier)}"></i></span><span class="mono" title="${big(n)}">${count(n)}</span><span class="mono exp">${pct(n / total)} / ${pct(t.p)}</span></li>`;
           }).join("")}</ul>
           ${bf ? `<div class="section-head" style="margin-top:22px"><h2>Lowest float</h2></div><div class="mono best-float">${CS.floatText(bf.f)}</div><div class="muted">${esc(CS.fullName({ k: bf.it.key, st: bf.st, f: bf.f }))}</div>${wearBar(bf.f, bf.it)}` : ""}
           ${patternsHTML(r, crate)}
@@ -461,8 +472,9 @@
     const rules = new Set(crate.contains.concat(crate.rare).filter((it) => it.patterns).map((it) => it.name));
     if (!rules.size) return "";
     const sp = r.specials;
-    return `<div class="section-head" style="margin-top:22px"><h2>Rare patterns</h2><span class="muted">${big(sp.length)} hit${sp.length === 1 ? "" : "s"}</span></div>
-      ${sp.length ? `<ul class="history">${sp.slice(0, 15).map((x) => `<li style="--c:${CS.tierColor(x.it.tier)}">${imgTag(x.it, 128)}<span class="nm"><span class="chip chip-pat chip-pat-${x.pat.style}">${esc(x.pat.label)}</span> ${esc(CS.fullName({ k: x.it.key, st: x.st, f: x.f }))} <span class="muted">#${x.seed}</span></span><span class="when mono">${x.p != null ? money(x.p) : "–"}</span></li>`).join("")}</ul>`
+    const hits = sp.reduce((a, x) => a + x.cnt, 0);
+    return `<div class="section-head" style="margin-top:22px"><h2>Rare patterns</h2><span class="muted">${big(hits)} hit${hits === 1 ? "" : "s"}</span></div>
+      ${sp.length ? `<ul class="history">${sp.slice(0, 15).map((x) => `<li style="--c:${CS.tierColor(x.it.tier)}">${imgTag(x.it, 128)}<span class="nm"><span class="chip chip-pat chip-pat-${x.pat.style}">${esc(x.pat.label)}</span> ${esc(CS.fullName({ k: x.it.key, st: x.st, f: x.f }))} ${x.seed != null ? `<span class="muted">#${x.seed}</span>` : ""}${x.cnt > 1 ? ` <span class="muted">×${big(x.cnt)}</span>` : ""}</span><span class="when mono">${x.p != null ? money(x.p) : "–"}</span></li>`).join("")}</ul>`
         : `<p class="muted">None this run. Can roll: ${esc([...rules].join(", "))}.</p>`}`;
   }
   function bindResults() { /* results are static; links handle themselves */ }
@@ -492,7 +504,7 @@
           ${totalTiers ? `<ul class="dist">${[GOLD, 5, 4, 3, 2, 1, 0].filter((t) => st.tiers[t] || CASE_ODDS[t]).map((t) => {
             const n = st.tiers[t] || 0;
             const share = n / totalTiers;
-            return `<li><span style="color:${CS.tierColor(t)}">${CS.TIERS[t].name}</span><span class="bar"><i style="width:${Math.max(share * 100, n ? 1 : 0)}%;background:${CS.tierColor(t)}"></i></span><span class="mono">${big(n)}</span><span class="mono exp">${CASE_ODDS[t] ? pct(CASE_ODDS[t]) : "–"}</span></li>`;
+            return `<li><span style="color:${CS.tierColor(t)}">${CS.TIERS[t].name}</span><span class="bar"><i style="width:${Math.max(share * 100, n ? 1 : 0)}%;background:${CS.tierColor(t)}"></i></span><span class="mono" title="${big(n)}">${count(n)}</span><span class="mono exp">${CASE_ODDS[t] ? pct(CASE_ODDS[t]) : "–"}</span></li>`;
           }).join("")}</ul>` : `<div class="empty"><p>Your drop breakdown shows up after your first unbox.</p></div>`}
           ${best ? `<div class="section-head" style="margin-top:24px"><h2>Lowest float</h2></div>
             <div class="best-row">

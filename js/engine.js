@@ -380,7 +380,8 @@
   function money(n) {
     if (n == null) return "–";
     const abs = Math.abs(n);
-    const s = abs >= 1e6 ? (abs / 1e6).toFixed(2) + "M" : abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const s = abs >= 1e12 ? (abs / 1e12).toFixed(2) + "T" : abs >= 1e9 ? (abs / 1e9).toFixed(2) + "B" : abs >= 1e6 ? (abs / 1e6).toFixed(2) + "M"
+      : abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return (n < 0 ? "-$" : "$") + s;
   }
 
@@ -388,7 +389,14 @@
   // Opens `n` containers in chunks without building inventory objects for every drop.
   // Counts are kept per item × wear × StatTrak so the total value can be priced exactly.
   // `keepTier`: drops at or above this tier are returned as real items (null keeps none).
-  function simulate(crate, n, { keepTier = null, keepMax = 100000, onProgress, shouldStop } = {}) {
+  // Up to EXACT_MAX openings are rolled one by one; beyond that the totals are drawn
+  // statistically (see simulateFast), which gives the same distribution in milliseconds.
+  const EXACT_MAX = 10000000;
+  function simulate(crate, n, opts = {}) {
+    return n > EXACT_MAX ? simulateFast(crate, n, opts) : simulateExact(crate, n, opts);
+  }
+
+  function simulateExact(crate, n, { keepTier = null, keepMax = 100000, onProgress, shouldStop } = {}) {
     return new Promise((resolve) => {
       const counts = new Map(); // key -> count, key = itemIdx*16 + wear*2 + st
       const tiers = {};
@@ -408,7 +416,7 @@
           if (it.patterns) {
             seed = randInt(1000);
             const pat = it.patterns.get(seed);
-            if (pat) specials.push({ it, f, st, seed, pat, wear: w === 5 ? null : WEARS[w] });
+            if (pat) specials.push({ it, f, st, seed, pat, cnt: 1, wear: w === 5 ? null : WEARS[w] });
           }
           const key = it.idx * 16 + w * 2 + st;
           counts.set(key, (counts.get(key) || 0) + 1);
@@ -437,7 +445,7 @@
         for (const sp of specials) {
           const base = priceOf(sp.it, sp.wear, sp.st, souv && (sp.it.kind === "weapon" || sp.it.kind === "knife"));
           sp.p = base != null ? Math.round(base * sp.pat.mult * 100) / 100 : null;
-          if (base != null) value += base * (sp.pat.mult - 1);
+          if (base != null) value += base * (sp.pat.mult - 1) * sp.cnt;
         }
         specials.sort((x, y) => (y.p || 0) - (x.p || 0));
         rows.sort((x, y) => (y.p || 0) - (x.p || 0) || y.it.tier - x.it.tier);
@@ -448,8 +456,165 @@
     });
   }
 
+  // ---------- statistical sampling for huge runs ----------
+  function gaussian() {
+    let u = 0;
+    while (u === 0) u = random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * random());
+  }
+  // Number of successes in n trials with probability p.
+  function binomial(n, p) {
+    if (n <= 0 || p <= 0) return 0;
+    if (p >= 1) return n;
+    if (p > 0.5) return n - binomial(n, 1 - p);
+    if (n < 1000) {
+      let k = 0;
+      for (let i = 0; i < n; i++) if (random() < p) k++;
+      return k;
+    }
+    const mean = n * p;
+    if (mean < 30) {
+      // Exact inversion: walk the probability mass function.
+      let pk = Math.exp(n * Math.log1p(-p));
+      let cdf = pk, k = 0;
+      const u = random();
+      const r = p / (1 - p);
+      while (u > cdf && k < n) {
+        pk *= ((n - k) / (k + 1)) * r;
+        k++;
+        cdf += pk;
+        if (pk < 1e-300) break;
+      }
+      return k;
+    }
+    // Large counts: the normal approximation is indistinguishable from exact here.
+    const k = Math.round(mean + Math.sqrt(mean * (1 - p)) * gaussian());
+    return Math.max(0, Math.min(n, k));
+  }
+  // Splits n into counts for each probability in `probs` (which sum to <= 1).
+  function multinomial(n, probs) {
+    const out = new Array(probs.length).fill(0);
+    let left = n, mass = probs.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < probs.length && left > 0; i++) {
+      if (probs[i] <= 0) continue;
+      const c = i === probs.length - 1 || mass <= probs[i] ? left : binomial(left, Math.min(1, probs[i] / mass));
+      out[i] = c;
+      left -= c;
+      mass -= probs[i];
+    }
+    return out;
+  }
+  // Chance of each exterior for one drop of `it`, from the same bracket model as rollFloat.
+  const wearProbCache = new Map();
+  function wearProbs(it) {
+    if (wearProbCache.has(it.idx)) return wearProbCache.get(it.idx);
+    const span = it.max - it.min;
+    const out = WEARS.map((W) => {
+      const a = (W.lo - it.min) / span, b = (W.hi - it.min) / span; // preimage in raw [0,1]
+      let p = 0;
+      WEARS.forEach((B, i) => {
+        const lo = Math.max(a, B.lo), hi = Math.min(b, B.hi);
+        if (hi > lo) p += BRACKET_WEIGHTS[i] * (hi - lo) / (B.hi - B.lo);
+      });
+      return p;
+    });
+    wearProbCache.set(it.idx, out);
+    return out;
+  }
+  // Probability of every item in a container, Doppler phases included.
+  function itemProbs(crate) {
+    const list = [];
+    for (const t of crate.tiers) {
+      if (t.tier === GOLD) {
+        for (const g of crate.rareGroups) {
+          const w = g.map((it) => (g.length === 1 ? 1 : PHASE_WEIGHTS[it.phase] || 10));
+          const sum = w.reduce((a, b) => a + b, 0);
+          g.forEach((it, i) => list.push([it, (t.p / crate.rareGroups.length) * (w[i] / sum)]));
+        }
+      } else {
+        for (const it of t.items) list.push([it, t.p / t.items.length]);
+      }
+    }
+    return list;
+  }
+
+  function simulateFast(crate, n, { keepTier = null, keepMax = 100000, onProgress } = {}) {
+    return new Promise((resolve) => setTimeout(() => {
+      const souv = crate.cat === "souvenir";
+      const probs = itemProbs(crate);
+      const counts = multinomial(n, probs.map((x) => x[1]));
+      const tiers = {};
+      const rows = [];
+      const specials = [];
+      let value = 0, unpriced = 0, bestFloat = null;
+      const kept = [];
+      let keptOverflow = 0;
+      const svOf = (it) => souv && (it.kind === "weapon" || it.kind === "knife");
+      const addRow = (it, wear, st, cnt) => {
+        if (!cnt) return;
+        const p = priceOf(it, wear, st, svOf(it));
+        if (p == null) unpriced += cnt;
+        else value += p * cnt;
+        rows.push({ it, wear, st, cnt, p });
+      };
+      probs.forEach(([it], i) => {
+        const c = counts[i];
+        if (!c) return;
+        tiers[it.tier] = (tiers[it.tier] || 0) + c;
+        const stN = crate.cat === "case" && it.stattrakable ? binomial(c, 0.1) : 0;
+        for (const [st, m] of [[0, c - stN], [1, stN]]) {
+          if (!m) continue;
+          if (!it.painted) { addRow(it, null, st, m); continue; }
+          const byWear = multinomial(m, wearProbs(it));
+          byWear.forEach((k, w) => addRow(it, WEARS[w], st, k));
+          // Rare patterns: each tier's seeds are a fixed share of the 1000 possible.
+          if (it.patterns) {
+            let left = m;
+            const tiersSeen = new Set(it.patterns.values());
+            for (const pat of tiersSeen) {
+              const h = binomial(left, pat.seeds.length / 1000);
+              left -= h;
+              multinomial(h, wearProbs(it)).forEach((k, w) => {
+                if (k) specials.push({ it, pat, st, cnt: k, seed: pat.seeds.length === 1 ? pat.seeds[0] : null, wear: WEARS[w], f: (WEARS[w].lo + WEARS[w].hi) / 2 });
+              });
+            }
+          }
+        }
+        // Lowest float: the minimum of the draws that landed in the lowest raw bracket.
+        if (it.painted) {
+          const k = binomial(c, BRACKET_WEIGHTS[0]);
+          if (k > 0) {
+            const raw = WEARS[0].hi * -Math.expm1(Math.log1p(-random()) / k);
+            const f = Math.fround(it.min + raw * (it.max - it.min));
+            if (bestFloat == null || f < bestFloat.f) bestFloat = { it, f, st: crate.cat === "case" && it.stattrakable && random() < 0.1 ? 1 : 0 };
+          }
+        }
+      });
+      for (const sp of specials) {
+        const base = priceOf(sp.it, sp.wear, sp.st, svOf(sp.it));
+        sp.p = base != null ? Math.round(base * sp.pat.mult * 100) / 100 : null;
+        if (base != null) value += base * (sp.pat.mult - 1) * sp.cnt;
+      }
+      specials.sort((x, y) => (y.p || 0) - (x.p || 0));
+      // Real items for the inventory, rarest first, up to the room left.
+      if (keepTier != null) {
+        const eligible = probs.map(([it], i) => [it, counts[i]]).filter(([it, c]) => c && it.tier >= keepTier).sort((a, b) => b[0].tier - a[0].tier);
+        let room = keepMax;
+        for (const [it, c] of eligible) {
+          const make = Math.min(c, room);
+          for (let j = 0; j < make; j++) kept.push(makeDrop(it, crate));
+          room -= make;
+          keptOverflow += c - make;
+        }
+      }
+      rows.sort((x, y) => (y.p || 0) - (x.p || 0) || y.it.tier - x.it.tier);
+      if (onProgress) onProgress(1);
+      resolve({ opened: n, tiers, value, unpriced, rows, best: rows[0] || null, bestFloat, kept, keptOverflow, specials, sampled: true, cost: openCost(crate) * n });
+    }, 0));
+  }
+
   Object.assign(CS, {
-    patternOf, prices: PR, hasPrices, marketName, priceOf, price, isEstimate, priceRange, cratePrice, openCost, money, simulate,
+    EXACT_MAX, patternOf, prices: PR, hasPrices, marketName, priceOf, price, isEstimate, priceRange, cratePrice, openCost, money, simulate,
     random, randInt, weighted,
     TIERS, GOLD, WEARS, CATEGORIES, catById,
     items, byKey, crates, crateById,

@@ -27,6 +27,8 @@
     return Math.floor(s / 86400) + "d ago";
   };
   const big = (n) => n.toLocaleString("en-US");
+  // Short form for very large counts: 1.99B, 2.5T.
+  const count = (n) => (n >= 1e12 ? (n / 1e12).toFixed(2) + "T" : n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : big(n));
 
   // Steam images: try the resized thumbnail first, then the original, then a placeholder.
   document.addEventListener("error", (e) => {
@@ -252,7 +254,7 @@
   }, true);
 
   CS.ui = {
-    esc, $, $$, pct, money, priceTag, year, ago, big, reduceMotion,
+    esc, $, $$, pct, money, priceTag, year, ago, big, count, reduceMotion,
     imgTag, goldEmblem, toast, itemCard, wearBar, floatBlock, factsHTML, rarityLabel,
     openOverlay, closeOverlay, hasOverlay, choose, confirmBox, detailHTML, inspect, revealModal,
   };
