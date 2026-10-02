@@ -107,10 +107,22 @@ def kind_of(entry_id, name, skin):
     return "weapon"
 
 
+def market_name(e, kind, sticker):
+    name = e["name"]
+    if kind == "sticker":
+        if sticker and sticker.get("market_hash_name"):
+            return sticker["market_hash_name"]
+        return name if name.startswith("Sticker | ") else "Sticker | " + name
+    if kind == "patch":
+        return name if name.startswith("Patch | ") else "Patch | " + name
+    return name
+
+
 def main():
     cache = sys.argv[1] if len(sys.argv) > 1 else None
     crates = load("crates.json", cache)
     skins = {s["id"]: s for s in load("skins.json", cache)}
+    stickers = {s["id"]: s for s in load("stickers.json", cache)}
 
     items, index = [], {}
     rarity_names = []
@@ -137,11 +149,13 @@ def main():
                 flags |= 2  # painted: has a float + pattern
             if skin.get("stattrak"):
                 flags |= 1  # can roll StatTrak
-        # [name, rarityNameIdx, tier, img, minFloat, maxFloat, flags, kind, phase, key]
+        mh = market_name(e, kind, stickers.get(e["id"]))
+        # [name, rarityNameIdx, tier, img, minFloat, maxFloat, flags, kind, phase, key, marketName]
         # `key` is stable across rebuilds; saved inventories reference items by it.
+        # `marketName` is the Steam market name without wear/StatTrak (empty when equal to name).
         items.append([
             e["name"], rname(e["rarity"]["name"]), tier, enc_img(e.get("image")),
-            mn, mx, flags, kind, e.get("phase") or "", key,
+            mn, mx, flags, kind, e.get("phase") or "", key, "" if mh == e["name"] else mh,
         ])
         index[key] = len(items) - 1
         return index[key]
@@ -160,6 +174,7 @@ def main():
         out.append({
             "id": c["id"],
             "n": c["name"],
+            "m": c.get("market_hash_name") or c["name"],
             "t": cat,
             "d": norm_date(c.get("first_sale_date"), c["name"]),
             "i": enc_img(c.get("image")),
